@@ -1,7 +1,5 @@
-struct ELF64
-
 struct ELF64 {
-    endian: Endian
+    endian: Endian,
     version: Version,
     os_abi: OSABI,
     file_type: FileType,
@@ -57,7 +55,7 @@ enum MachineType {
 }
 
 #[non_exhaustive]
-enum FileType{
+enum FileType {
     Executable,
     Relocatble,
     Core,
@@ -66,3 +64,10 @@ enum FileType{
 
 struct Address(u64);
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_elf_header() {}
+}
