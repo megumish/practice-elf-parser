@@ -1,3 +1,6 @@
+use anyhow::Context;
+use std::io::BufRead;
+
 struct ELF64 {
     endian: Endian,
     version: Version,
@@ -64,10 +67,24 @@ enum FileType {
 
 struct Address(u64);
 
+impl ELF64 {
+    fn is_valid_magic(input: &[u8]) -> anyhow::Result<bool> {
+        input
+            .get(0..4)
+            .map(|magic| magic == b"\x7fELF")
+            .context("Failed to read magic number")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     #[test]
-    fn parse_elf_header() {}
+    fn is_valid_magic() -> anyhow::Result<()> {
+        let buffer = include_bytes!("main");
+        assert!(ELF64::is_valid_magic(buffer)?);
+        Ok(())
+    }
 }
