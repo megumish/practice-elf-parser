@@ -1,5 +1,5 @@
 use anyhow::Context;
-use std::{io::BufRead, mem::transmute};
+use std::{fs::File, io::BufRead, mem::transmute};
 
 struct ELF64 {
     endian: Endian,
@@ -59,15 +59,19 @@ enum OSABI {
 #[non_exhaustive]
 enum MachineType {
     AMD64,
+    Unknown(u16),
 }
 
 #[derive(Debug, PartialEq)]
 #[non_exhaustive]
 enum FileType {
+    None,
     Executable,
     Relocatble,
     Core,
     DynamicLibrary,
+    Number,
+    Unknown(u16),
 }
 
 #[derive(Debug, PartialEq)]
@@ -146,20 +150,39 @@ impl ELF64 {
     }
 
     fn parse_file_type(input: &[u8], endian: Endian) -> anyhow::Result<FileType> {
-        let file_type_bytes = input.get(10..12).context("Failed to read file type")?;
+        let file_type_bytes = input.get(15..17).context("Failed to read file type")?;
+        println!("{:?}", file_type_bytes);
         let file_type = unsafe {
             let file_type_fixed_array = &*(file_type_bytes.as_ptr() as *const [u8; 2]);
             match endian {
-                Endian::Little => transmute::<[u8; 2], u16>(*file_type_fixed_array).to_le(),
-                Endian::Big => transmute::<[u8; 2], u16>(*file_type_fixed_array).to_be(),
+                Endian::Little => transmute::<[u8; 2], u16>(*file_type_fixed_array).to_be(),
+                Endian::Big => transmute::<[u8; 2], u16>(*file_type_fixed_array).to_le(),
             }
         };
         match file_type {
-            0x00 => Ok(FileType::Executable),
+            0x00 => Ok(FileType::None),
             0x01 => Ok(FileType::Relocatble),
-            0x02 => Ok(FileType::Core),
+            0x02 => Ok(FileType::Executable),
             0x03 => Ok(FileType::DynamicLibrary),
-            _ => Err(anyhow::anyhow!("Invalid file type")),
+            0x04 => Ok(FileType::Core),
+            0x05 => Ok(FileType::Number),
+            _ => Ok(FileType::Unknown(file_type)),
+        }
+    }
+
+    fn parse_machine_type(input: &[u8], endian: Endian) -> anyhow::Result<MachineType> {
+        let machine_type_bytes = input.get(17..19).context("Failed to read machine type")?;
+        println!("{:?}", machine_type_bytes);
+        let machine_type = unsafe {
+            let machine_type_fixed_array = &*(machine_type_bytes.as_ptr() as *const [u8; 2]);
+            match endian {
+                Endian::Little => transmute::<[u8; 2], u16>(*machine_type_fixed_array).to_be(),
+                Endian::Big => transmute::<[u8; 2], u16>(*machine_type_fixed_array).to_le(),
+            }
+        };
+        match machine_type {
+            0x3e => Ok(MachineType::AMD64),
+            _ => Ok(MachineType::Unknown(machine_type)),
         }
     }
 }
@@ -216,7 +239,17 @@ mod tests {
         let buffer = include_bytes!("main");
         assert_eq!(
             ELF64::parse_file_type(buffer, Endian::Little)?,
-            FileType::Executable
+            FileType::DynamicLibrary
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn is_amd64() -> anyhow::Result<()> {
+        let buffer = include_bytes!("main");
+        assert_eq!(
+            ELF64::parse_machine_type(buffer, Endian::Little)?,
+            MachineType::AMD64
         );
         Ok(())
     }
