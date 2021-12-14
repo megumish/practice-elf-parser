@@ -1,42 +1,62 @@
-use anyhow::Context;
-use std::{fs::File, io::BufRead, mem::transmute};
+mod as_c_struct;
+mod parser;
 
-struct ELF64 {
-    endian: Endian,
-    version: Version,
-    os_abi: OSABI,
-    file_type: FileType,
-    machine: MachineType,
-    entry: Address,
-    program_header_offset: u64,
-    section_header_offset: u64,
-    flags: u64,
-    elf_header_size: u32,
-    program_header_entry_size: u32,
-    program_header_number: u32,
-    section_header_entry_size: u32,
-    section_header_number: u32,
-    section_header_string_table_index: u32,
+pub struct ELFHeader<'a, Class> {
+    pub endian: Endian,
+    pub version: Version<'a>,
+    pub os_abi: OSABI<'a>,
+    pub file_type: FileType<'a>,
+    pub machine: MachineType<'a>,
+    pub entry: Address<'a>,
+    pub program_header_offset: &'a Class,
+    pub section_header_offset: &'a Class,
+    pub flags: &'a u32,
+    pub elf_header_size: &'a u32,
+    pub program_header_entry_size: &'a u32,
+    pub program_header_number: &'a u32,
+    pub section_header_entry_size: &'a u32,
+    pub section_header_number: &'a u32,
+    pub section_header_string_table_index: &'a u32,
+}
+
+impl<Class> ELFHeader<'_, Class> {
+    fn from_c_struct(h: as_c_struct::ELFHeader<Class>) -> Self {
+        Self {
+            endian: if h.e_ident == 1 {
+                Endian::Little
+            } else {
+                Endian::Big
+            },
+            version: if h.e_version == 0 {
+                Version::None
+            } else if h.e_version == 1 {
+                Version::Current
+            } else {
+                Version::Unknown(&h.e_ident.version)
+            },
+            
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 #[non_exhaustive]
-enum Endian {
+pub enum Endian {
     Little,
     Big,
 }
 
 #[derive(Debug, PartialEq)]
 #[non_exhaustive]
-enum Version {
+pub enum Version<'a> {
     None,
     Current,
-    Unknown(u8),
+    Unknown(&'a u8),
 }
 
 #[derive(Debug, PartialEq)]
 #[non_exhaustive]
-enum OSABI {
+pub enum OSABI<'a> {
     None,
     SystemV,
     HPUX,
@@ -52,205 +72,42 @@ enum OSABI {
     ArmEABI,
     Arm,
     Standalone,
-    Unknown(u8),
+    Unknown(&'a u8),
 }
 
 #[derive(Debug, PartialEq)]
 #[non_exhaustive]
-enum MachineType {
+pub enum MachineType<'a> {
     AMD64,
-    Unknown(u16),
+    Unknown(&'a u16),
 }
 
 #[derive(Debug, PartialEq)]
 #[non_exhaustive]
-enum FileType {
+pub enum FileType<'a> {
     None,
     Executable,
     Relocatble,
     Core,
     DynamicLibrary,
     Number,
-    Unknown(u16),
+    Unknown(&'a u16),
 }
 
 #[derive(Debug, PartialEq)]
 #[non_exhaustive]
-enum ELFClass {
+pub enum ELFClass<'a> {
     None,
     ELF32,
     ELF64,
-    Unknown(u8),
+    Unknown(&'a u8),
 }
 
-struct Address(u64);
+// TODO: display this as hex value
+#[derive(Debug, PartialEq)]
+pub struct Address<'a>(&'a u64);
 
-impl ELF64 {
-    fn is_valid_magic(input: &[u8]) -> anyhow::Result<bool> {
-        input
-            .get(0..4)
-            .map(|magic| magic == b"\x7fELF")
-            .context("Failed to read magic number")
-    }
-
-    fn parse_elf_class(input: &[u8]) -> anyhow::Result<ELFClass> {
-        let elf_class = input.get(4).context("Failed to read elf class")?;
-        match elf_class {
-            b'\x00' => Ok(ELFClass::None),
-            b'\x01' => Ok(ELFClass::ELF32),
-            b'\x02' => Ok(ELFClass::ELF64),
-            b => Ok(ELFClass::Unknown(*b)),
-        }
-    }
-
-    fn parse_endian(input: &[u8]) -> anyhow::Result<Endian> {
-        let endian = input.get(5).context("Failed to read endian")?;
-        match endian {
-            b'\x01' => Ok(Endian::Little),
-            b'\x02' => Ok(Endian::Big),
-            _ => Err(anyhow::anyhow!("Invalid endian")),
-        }
-    }
-
-    fn parse_version(input: &[u8]) -> anyhow::Result<Version> {
-        let version = input.get(6).context("Failed to read elf version")?;
-        match version {
-            b'\x00' => Ok(Version::None),
-            b'\x01' => Ok(Version::Current),
-            b => Ok(Version::Unknown(*b)),
-        }
-    }
-
-    fn parse_os_abi(input: &[u8]) -> anyhow::Result<OSABI> {
-        let os_abi = input.get(7).context("Failed to read os abi")?;
-        match os_abi {
-            b'\x00' => Ok(OSABI::SystemV),
-            b'\x01' => Ok(OSABI::HPUX),
-            b'\x02' => Ok(OSABI::NetBSD),
-            b'\x03' => Ok(OSABI::GNUOrLinux),
-            b'\x06' => Ok(OSABI::Solaris),
-            b'\x07' => Ok(OSABI::AIX),
-            b'\x08' => Ok(OSABI::SGIIrix),
-            b'\x09' => Ok(OSABI::FreeBSD),
-            b'\x0A' => Ok(OSABI::TRU64),
-            b'\x0B' => Ok(OSABI::NovellModesto),
-            b'\x0C' => Ok(OSABI::OpenBSD),
-            b'\x40' => Ok(OSABI::ArmEABI),
-            b'\x61' => Ok(OSABI::Arm),
-            b'\xff' => Ok(OSABI::Standalone),
-            b => Ok(OSABI::Unknown(*b)),
-        }
-    }
-
-    fn parse_abi_version(input: &[u8]) -> anyhow::Result<u8> {
-        input
-            .get(8)
-            .map(|b| *b)
-            .context("Failed to read abi version")
-    }
-
-    fn parse_file_type(input: &[u8], endian: Endian) -> anyhow::Result<FileType> {
-        let file_type_bytes = input.get(15..17).context("Failed to read file type")?;
-        println!("{:?}", file_type_bytes);
-        let file_type = unsafe {
-            let file_type_fixed_array = &*(file_type_bytes.as_ptr() as *const [u8; 2]);
-            match endian {
-                Endian::Little => transmute::<[u8; 2], u16>(*file_type_fixed_array).to_be(),
-                Endian::Big => transmute::<[u8; 2], u16>(*file_type_fixed_array).to_le(),
-            }
-        };
-        match file_type {
-            0x00 => Ok(FileType::None),
-            0x01 => Ok(FileType::Relocatble),
-            0x02 => Ok(FileType::Executable),
-            0x03 => Ok(FileType::DynamicLibrary),
-            0x04 => Ok(FileType::Core),
-            0x05 => Ok(FileType::Number),
-            _ => Ok(FileType::Unknown(file_type)),
-        }
-    }
-
-    fn parse_machine_type(input: &[u8], endian: Endian) -> anyhow::Result<MachineType> {
-        let machine_type_bytes = input.get(17..19).context("Failed to read machine type")?;
-        println!("{:?}", machine_type_bytes);
-        let machine_type = unsafe {
-            let machine_type_fixed_array = &*(machine_type_bytes.as_ptr() as *const [u8; 2]);
-            match endian {
-                Endian::Little => transmute::<[u8; 2], u16>(*machine_type_fixed_array).to_be(),
-                Endian::Big => transmute::<[u8; 2], u16>(*machine_type_fixed_array).to_le(),
-            }
-        };
-        match machine_type {
-            0x3e => Ok(MachineType::AMD64),
-            _ => Ok(MachineType::Unknown(machine_type)),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Cursor;
-
-    #[test]
-    fn is_valid_magic() -> anyhow::Result<()> {
-        let buffer = include_bytes!("main");
-        assert!(ELF64::is_valid_magic(buffer)?);
-        Ok(())
-    }
-
-    #[test]
-    fn is_elf64() -> anyhow::Result<()> {
-        let buffer = include_bytes!("main");
-        assert_eq!(ELF64::parse_elf_class(buffer)?, ELFClass::ELF64);
-        Ok(())
-    }
-
-    #[test]
-    fn is_little_endian() -> anyhow::Result<()> {
-        let buffer = include_bytes!("main");
-        assert_eq!(ELF64::parse_endian(buffer)?, Endian::Little);
-        Ok(())
-    }
-
-    #[test]
-    fn is_current_elf_version() -> anyhow::Result<()> {
-        let buffer = include_bytes!("main");
-        assert_eq!(ELF64::parse_version(buffer)?, Version::Current);
-        Ok(())
-    }
-
-    #[test]
-    fn is_system_v() -> anyhow::Result<()> {
-        let buffer = include_bytes!("main");
-        assert_eq!(ELF64::parse_os_abi(buffer)?, OSABI::SystemV);
-        Ok(())
-    }
-
-    #[test]
-    fn is_zero_abi_version() -> anyhow::Result<()> {
-        let buffer = include_bytes!("main");
-        assert_eq!(ELF64::parse_abi_version(buffer)?, 0);
-        Ok(())
-    }
-
-    #[test]
-    fn is_executable() -> anyhow::Result<()> {
-        let buffer = include_bytes!("main");
-        assert_eq!(
-            ELF64::parse_file_type(buffer, Endian::Little)?,
-            FileType::DynamicLibrary
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn is_amd64() -> anyhow::Result<()> {
-        let buffer = include_bytes!("main");
-        assert_eq!(
-            ELF64::parse_machine_type(buffer, Endian::Little)?,
-            MachineType::AMD64
-        );
-        Ok(())
-    }
+pub enum Error<'a> {
+    InvalidMagic(&'a [u8]),
+    InvalidFile,
 }
