@@ -1,6 +1,8 @@
-#[derive(Debug)]
+use std::mem::size_of;
+
+#[derive(Debug, Clone)]
 #[repr(C)]
-struct ELFHeader<Class>
+pub struct ELFHeader<Class>
 where
     Class: SwapBytes + Copy,
 {
@@ -109,7 +111,7 @@ where
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
-struct ELFIdentifier {
+pub struct ELFIdentifier {
     pub magic: [u8; 4],
     pub class: ELFClass,
     pub data: Endian,
@@ -153,18 +155,30 @@ impl SwapBytes for MachineType {
     }
 }
 
+pub fn parse_elf_header<'a>(bytes: &'a [u8]) -> &'a ELFHeader<u64> {
+    if bytes.len() < size_of::<ELFHeader<u64>>() {
+        panic!("ELF header is too small");
+    }
+    let header = unsafe {
+        &*(&bytes[0..size_of::<ELFHeader<u64>>()] as *const [u8] as *const ELFHeader<u64>)
+    };
+    if cfg!(target_endian = "big") && header.e_ident.data == Endian::Little {
+        Box::leak(Box::new(header.swap_bytes()))
+    } else if cfg!(target_endian = "little") && header.e_ident.data == Endian::Big {
+        Box::leak(Box::new(header.swap_bytes()))
+    } else {
+        header
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::mem::size_of;
-
-    use crate::ELFHeader;
+    use crate::parse_elf_header;
 
     #[test]
     fn it_works() {
         let bytes = include_bytes!("main");
-        let header = unsafe {
-            &*(&bytes[0..size_of::<ELFHeader<u64>>()] as *const [u8] as *const ELFHeader<u64>)
-        };
+        let header = parse_elf_header(bytes);
         println!("{header:#x?}")
     }
 }
